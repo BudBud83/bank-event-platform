@@ -1,0 +1,68 @@
+# =============================================================================
+# Spring Boot configuration. This file is loaded at startup and wires the
+# HTTP server, database, and Kafka client. Think of it as the "ops panel"
+# for the application — no code changes needed to point at a different broker.
+# =============================================================================
+server:
+  port: 8080
+
+spring:
+  application:
+    name: bank-event-platform
+
+  datasource:
+    # H2 in-memory: data disappears when the JVM stops. Fine for learning.
+    url: jdbc:h2:mem:corebank;DB_CLOSE_DELAY=-1;DB_CLOSE_ON_EXIT=FALSE
+    driver-class-name: org.h2.Driver
+    username: sa
+    password:
+
+  h2:
+    console:
+      enabled: true          # open http://localhost:8080/h2-console to inspect tables
+      path: /h2-console
+
+  jpa:
+    hibernate:
+      ddl-auto: update       # create/update tables from @Entity classes
+    show-sql: false
+    properties:
+      hibernate:
+        format_sql: true
+
+  kafka:
+    bootstrap-servers: localhost:9092
+
+    # ----- PRODUCER: the HTTP API uses this to publish domain events -----
+    producer:
+      # key = account/payment id (string). Same key => same partition => order preserved.
+      key-serializer: org.apache.kafka.common.serialization.StringSerializer
+      # value = JSON body of the event
+      value-serializer: org.springframework.kafka.support.serializer.JsonSerializer
+      properties:
+        # include Java type in a header so consumers know which class to reconstruct
+        spring.json.add.type.headers: true
+      acks: all              # wait for the broker to persist the record (safer for money events)
+
+    # ----- CONSUMER: fraud, ledger, notification, audit each have a group -----
+    consumer:
+      # If a group has never committed an offset, start from the earliest record
+      # so a newly started "department" can catch up. Banks often use "latest"
+      # in production so a new instance does not replay years of history.
+      auto-offset-reset: earliest
+      key-deserializer: org.apache.kafka.common.serialization.StringDeserializer
+      value-deserializer: org.springframework.kafka.support.serializer.JsonDeserializer
+      properties:
+        spring.json.trusted.packages: com.bankevent.events
+        spring.json.use.type.headers: true
+      enable-auto-commit: false   # we commit after successful processing (at-least-once)
+
+    listener:
+      ack-mode: record            # Spring commits the offset after each listener method returns
+
+# Demo fraud threshold — a real bank would load this from policy tables.
+bank:
+  fraud:
+    high-value-threshold: 10000
+    velocity-window-seconds: 60
+    velocity-max-payments: 3
